@@ -93,7 +93,7 @@ def fob_treams(params, cfg):
     lmax   = cfg["lmax"]
     wavelengths = cfg["wavelengths"]
     Sgn = cfg["Sgn"]
-    pol       = cfg["pol"]            # e.g. [0, 1, 0]
+    pol       = cfg["pol"]         
     poltype   = cfg["poltype"]
     grid_f    = cfg["grid_f"]
     grid_b    = cfg["grid_b"]
@@ -235,7 +235,6 @@ def field_wl_treams(params, cfg):
 def dreams_rcd(params, eps_object, k0, cfg):
     pitch       = cfg["pitch"]
     eps_medium  = cfg["eps_medium"]
-    #eps_object  = cfg["eps_object"]
     lmax        = cfg["lmax"]
     lmax_glob   = cfg["lmax_glob"]
     #k0          = cfg["k0"]
@@ -257,9 +256,10 @@ def dreams_rcd(params, eps_object, k0, cfg):
     )
 
     poltype = "helicity" if helicity else "parity"
+    treams.config.POLTYPE = poltype
 
     a = anp.array([[pitch, 0.0], [0.0, pitch]], dtype=jnp.float64)
-    b = treams.lattice.reciprocal(anp.array(a))  # reciprocal needs numpy
+    b = treams.lattice.reciprocal(anp.array(a))  
     kvec = (anp.array(kpars) +
             treams.lattice.diffr_orders_circle(b, rmax=float(rmax_coef * k0)) @ b)
     pwb  = default_plane_wave(jnp.asarray(kvec, jnp.float64))
@@ -295,26 +295,31 @@ def treams_rcd(params, cfg):
     lattice = treams.Lattice.square(pitch)
     treams.config.POLTYPE = 'helicity' if helicity else 'parity'
 
-    #  explicit Material objects
-    mats = [treams.Material(eps_object), treams.Material(eps_medium)]
+    mats = [treams.Material(anp.array([eps_object])), treams.Material(anp.array([eps_medium]))]
     spheres = [treams.TMatrix.sphere(lmax, k0, r, mats) for r in radii]
     tm_cluster = treams.TMatrix.cluster(spheres, pos).interaction.solve()
     tm_global  = tm_cluster.expand(treams.SphericalWaveBasis.default(lmax))
     tm_lat     = tm_global.latticeinteraction.solve(lattice, [kx, ky])
-
     pwb   = treams.PlaneWaveBasisByComp.diffr_orders([kx, ky], lattice, rmax_coef * k0)
-    array = treams.SMatrices.from_array(tm_lat, pwb)
-
+    array, list_array = from_array(tm_lat, pwb)
     # Rx (x-illum)
-    plw_x = treams.plane_wave([kx, ky], [1,0,0], k0=k0, basis=pwb, material=mats[1])
+    pol = 1 #[1,0,0] different phase factor
+    plw_x = treams.plane_wave([kx, ky], pol, k0=k0, basis=pwb, material=mats[1])
     tr_x  = array.tr(plw_x)[1]
-
+    rxs = []
+    for ar in list_array:
+        rix = (ar[1, 0]@ plw_x)
+        rxs.append(rix)
     # Ry (y-illum)
-    plw_y = treams.plane_wave([kx, ky], [0,1,0], k0=k0, basis=pwb, material=mats[1])
+    pol = 0 #[0,1,0]
+    plw_y = treams.plane_wave([kx, ky], pol, k0=k0, basis=pwb, material=mats[1])
     tr_y  = array.tr(plw_y)[1]
-
+    rys = []
+    for ar in list_array:
+        riy = (ar[1, 0]@ plw_y)
+        rys.append(riy)
     ans = anp.abs(tr_y - tr_x)
-    return ans, tr_x, tr_y
+    return ans, tr_x, tr_y, rxs, rys
 
 def rcd_k0(i, cfg, params):
     k0s          = cfg["k0s"]
@@ -329,8 +334,11 @@ def treams_rcd_parallel(params, cfg):
     results = Parallel(n_jobs=-1, backend="loky")(
         delayed(rcd_k0)(i, cfg=cfg, params=params) for i in range(len(k0s))
     )
-    ans_list, rx_list, ry_list = zip(*results)  # tuples of arrays
+    ans_list, rx_list, ry_list, ph_x_list, ph_y_list = zip(*results) 
     ans = anp.stack(ans_list, axis=0)
     rx  = anp.stack(rx_list,  axis=0)
     ry  = anp.stack(ry_list,  axis=0)
-    return anp.array([ans, rx, ry])
+    ph_x  = anp.stack(ph_x_list,  axis=0)
+    ph_y  = anp.stack(ph_y_list,  axis=0)
+    return ans, rx, ry, ph_x, ph_y
+

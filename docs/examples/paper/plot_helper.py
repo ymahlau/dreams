@@ -1,8 +1,15 @@
 import numpy as np
+import h5py
+import re
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d.axes3d import Axes3D
 from matplotlib.colors import Normalize
 from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
+from func_helper import treams_rcd
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
+from pathlib import Path
+import matplotlib.patches as mpatches
 
 def plot_res(wavelengths, fob_init, fob_final, sum_init, sum_final,
              va, positions, radii, posf, radf, wl_at, label, fname, axs=None):
@@ -20,7 +27,16 @@ def plot_res(wavelengths, fob_init, fob_final, sum_init, sum_final,
 
     plot_3d_with_depth(positions, radii, ax=ax2, color="red", label="Initial")
     plot_3d_with_depth(posf, radf, ax=ax2, color="blue", label="Optimized")
+    set_axes_not_equal(ax2)
 
+    # z = 0 plane
+    xx, yy = np.meshgrid(
+        np.linspace(-400, 400, 10),
+        np.linspace(-400, 400, 10),
+    )
+    zz = np.zeros_like(xx)
+    ax2.plot_surface(xx, yy, zz, color="gray", alpha=0.3,
+                    linewidth=0, zorder=0)
     ax5.plot(wavelengths, fob_init,  color="r", label="F/B init")
     ax5.plot(wavelengths, fob_final, color="b", label="F/B final")
     ax5.set_ylabel("F/B")
@@ -44,13 +60,10 @@ def set_axes_not_equal(ax):
     ax.set_ylim(-500, 500)
     ax.set_zlim(-200, 200)
 
-    # 2. compute the actual spans of your data
     x0, x1 = ax.get_xlim3d()
     y0, y1 = ax.get_ylim3d()
     z0, z1 = ax.get_zlim3d()
     sx, sy, sz = (x1 - x0), (y1 - y0), (z1 - z0)
-
-    # 3. tell Matplotlib: “make my box shape = (sx : sy : sz)”
     ax.set_box_aspect((sx, sy, sz))
 
 def set_axes_equal(ax):
@@ -97,15 +110,13 @@ def plot_3d_with_depth(centers, radii, depth_factor=1.0, ax=None,
     """
     centers = np.asarray(centers, dtype=float)
     radii = np.asarray(radii, dtype=float)
+    min_r = np.min(np.sqrt(centers[:, 0]**2 + centers[:, 1]**2))
+    max_r = np.max(np.sqrt(centers[:, 0]**2 + centers[:, 1]**2))
 
     if ax is None:
         fig = plt.figure()
         ax = fig.add_subplot(111, projection="3d")
 
-    # Axis labels and ticks
-    ax.set_xlabel("x (nm)", labelpad=4)
-    ax.set_ylabel("y (nm)", labelpad=4)
-    ax.set_zlabel("z (nm)", labelpad=4)
 
     ax.xaxis.set_tick_params(pad=1)
     ax.yaxis.set_tick_params(pad=1)
@@ -115,24 +126,14 @@ def plot_3d_with_depth(centers, radii, depth_factor=1.0, ax=None,
     ax.yaxis.set_major_locator(MaxNLocator(3))
     ax.zaxis.set_major_locator(MaxNLocator(3))
 
-    # z = 0 plane (same fixed extent as before)
-    xx, yy = np.meshgrid(
-        np.linspace(-400, 400, 10),
-        np.linspace(-400, 400, 10),
-    )
-    zz = np.zeros_like(xx)
-    ax.plot_surface(xx, yy, zz, color="gray", alpha=0.3,
-                    linewidth=0, zorder=0)
-
     # Opacity scaling along z
     if norm is None:
-        # Small, safe default; if you always pass norm, this never triggers.
         if centers.size == 0:
             norm = 1.0
         else:
             norm = float(np.max(centers[:, 2]) or 1.0)
 
-    # Precompute sphere mesh (unit sphere) once
+    # Precompute sphere mesh 
     u = np.linspace(0.0, 2.0 * np.pi, 100)
     v = np.linspace(0.0, np.pi, 100)
     cos_u = np.cos(u)
@@ -149,20 +150,22 @@ def plot_3d_with_depth(centers, radii, depth_factor=1.0, ax=None,
         y = r * np.outer(sin_u, sin_v) + cy
         z = r * np.outer(np.ones_like(u), cos_v) + cz
 
-        # Map z position → alpha
-        alpha_value = np.interp(cz, [0.0, norm], [0.4, 0.6])
+        # # Map z position to alpha
+        # alpha_value = np.interp(cz, [0.0, norm], [0.4, 0.6])
+        r_xy = np.sqrt(cx**2 + cy**2) 
+        alpha_value = np.interp(r_xy, [min_r, max_r], [0.7, 0.2])
 
         ax.plot_surface(
             x, y, z,
             color=color,
             alpha=float(alpha_value),
             edgecolor="none",
+            shade=True
         )
 
-    set_axes_not_equal(ax)
     return ax
 
-def plot_opt(pos, radii, pos_opt, radii_opt, pitch, ax=None):
+def plot_3ds(pos, radii, pos_opt, radii_opt, ax=None):
     """
     3D overlay of initial (red) and optimized (blue) sphere arrays.
 
@@ -177,23 +180,22 @@ def plot_opt(pos, radii, pos_opt, radii_opt, pitch, ax=None):
     -------
     ax : matplotlib 3D axis
     """
+    
     if ax is None:
         fig = plt.figure()
         ax = fig.add_subplot(111, projection="3d")
 
-    # shared color normalization by z (for consistency if you later color by depth)
     vm = max(np.abs(c[2]) for ps in [pos_opt, pos] for c in ps)
-    _ = Normalize(vmin=-vm, vmax=vm)  # kept for future use if needed
+    _ = Normalize(vmin=-vm, vmax=vm)  
 
     colors = ["red", "blue"]
     labels = ["Initial", "Optimized"]
-
-    plot_3d_with_depth(pos,     radii,     ax=ax, color=colors[0], label=labels[0])
-    plot_3d_with_depth(pos_opt, radii_opt, ax=ax, color=colors[1], label=labels[1])
-
-    # legend via proxy patches (since surfaces don't create handles)
-    legend_proxy = [Patch(color=colors[i], label=labels[i]) for i in range(2)]
-    ax.legend(handles=legend_proxy)
+    ax = plot_3d_with_depth(pos,     radii,     ax=ax, color=colors[0], label=labels[0])
+    set_axes_equal(ax)
+    
+    ax = plot_3d_with_depth(pos_opt, radii_opt, ax=ax, color=colors[1], label=labels[1])
+    set_axes_equal(ax)
+    ax.view_init(elev=20, azim=45)    
     ax.grid()
     return ax
 
@@ -208,11 +210,11 @@ def plot_plane(plane_mask, vfa, vba, vf2a, vb2a, x, y, z, ttl, ax):
     vf2 = vf2a[plane_mask]
     vb2 = vb2a[plane_mask]
 
-    # Angle: backward is forward + π
+    # Angle: backward is forward + pi
     theta  = np.arctan2(a_plane, z_plane)
     theta2 = (theta + np.pi) % (2 * np.pi)
 
-    # magnitudes, strictly positive for log scale
+    # magnitudes positive for log scale
     vf_p, vb_p  = np.abs(vf),  np.abs(vb)
     vf2_p, vb2_p = np.abs(vf2), np.abs(vb2)
     vmax = np.max([vf_p.max(initial=0), vb_p.max(initial=0),
@@ -223,7 +225,7 @@ def plot_plane(plane_mask, vfa, vba, vf2a, vb2a, x, y, z, ttl, ax):
     vf2_p = np.clip(vf2_p, eps, None)
     vb2_p = np.clip(vb2_p, eps, None)
 
-    # sort for cleaner plotting 
+    #  for plotting 
     order = np.argsort(theta)
     th_f, th_b = theta[order], theta2[order]
     vf_p, vb_p = vf_p[order], vb_p[order]
@@ -296,3 +298,354 @@ def plot_multipole(xss, wls, wl, ax, title):
     ax.set_title(title)
     ax.set_ylabel(r"$\sigma_{sc}$ (nm$^2$)")
     ax.tick_params(axis='x', labelsize=11)
+    
+    
+    
+def draw_chain(ax, f_1, base_width=0.01, reference_ax=None):
+    """
+    Draw chained phasors for each component and return concatenated x/y
+    coordinates for setting global axis limits.
+
+    Parameters
+    ----------
+    ax : matplotlib Axes
+    f_1 : array-like, shape (C, M)
+        Complex phasors per component (C) and segment (M). Typically f_1 = vec[idx].T
+    base_width : float
+        Desired shaft width (inches) for the reference_ax.
+    reference_ax : Axes or None
+        Axes used as baseline for relative width scaling (default: ax).
+    colors : sequence
+        Two colors per component (even/odd segments). Length >= 2*C.
+    labels : sequence
+        Two labels per component (even/odd). Length >= 2*C.
+
+    Returns
+    -------
+    all_x : np.ndarray
+        Concatenated start/tip x coordinates across all components.
+    all_y : np.ndarray
+        Concatenated start/tip y coordinates across all components.
+    """
+    fig = ax.get_figure()
+    colors = np.array(["gray", "magenta","blue", "orange", "black", "green"]) 
+    labels = ["r$_x$, E-multipoles", "r$_x$, M-multipoles", "r$_y$, E-multipoles", "r$_y$, M-multipoles", "z-pol, E-multipoles", "z-pol, M-multipoles"]
+    # current and reference axes sizes (inches)
+    bbox_ax = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+    size_ax = max(bbox_ax.width, bbox_ax.height) if (bbox_ax.width > 0 and bbox_ax.height > 0) else 1.0
+
+    if reference_ax is None:
+        reference_ax = ax
+    bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+    ax_size_in = max(bbox.width, bbox.height)
+    base_visual_width = 0.08  # inches
+
+    width = base_visual_width / ax_size_in
+
+    all_x_parts, all_y_parts = [], []
+
+    for ee, ecomp in enumerate(f_1):
+        U = np.asarray(ecomp).real
+        V = np.asarray(ecomp).imag
+
+        # chained tails
+        X0 = np.concatenate([[0.0], np.cumsum(U)[:-1]])
+        Y0 = np.concatenate([[0.0], np.cumsum(V)[:-1]])
+
+        # collect for global limits
+        all_x_parts.extend((X0, X0 + U))
+        all_y_parts.extend((Y0, Y0 + V))
+
+        # alternating colors
+        color_pair = [colors[2*ee + 1], colors[2*ee]]
+        ln = len(X0)
+        for remain in (0, 1):
+            mask = (np.arange(ln) % 2) == remain
+            ax.quiver(
+                X0[mask], Y0[mask], U[mask], V[mask],
+                angles='xy', scale_units='xy', scale=1,
+                label=labels[2*ee + remain],
+                color=color_pair[remain],
+                width=width, units="inches",
+            )
+
+        # axes & final tip
+        ax.set_xlabel('Re'); ax.set_ylabel('Im'); ax.grid(True)
+        ax.axhline(0, color='black', linestyle="--", linewidth=1)
+        ax.axvline(0, color='black', linestyle="--", linewidth=1)
+        ax.plot(X0[-1] + U[-1], Y0[-1] + V[-1], '*', color='black', markersize=7)
+        ax.set_aspect('equal', 'box')
+
+    all_x = np.hstack(all_x_parts) if all_x_parts else np.array([])
+    all_y = np.hstack(all_y_parts) if all_y_parts else np.array([])
+    return all_x, all_y
+
+def get_first(f: h5py.File, *keys: str) -> np.ndarray:
+    """Return the first existing dataset among keys as a numpy array."""
+    for k in keys:
+        if k in f:
+            return np.array(f[k][...])
+    raise KeyError(f"None of {keys} found in {f.filename}")
+
+
+def read_run(path: Path) -> dict:
+    """Read one optimization run into a simple dict."""
+    with h5py.File(path, "r") as f:
+        run = dict(
+            pos_init    = np.array(f["pos_init"][...]),
+            radii_init  = np.array(f["radii_init"][...]),
+            pos_final   = np.array(f["pos_final"][...]),
+            radii_final = np.array(f["radii_final"][...]),
+            pitch       = float(np.array(f["pitch"][...])),
+            wls_axis    = get_first(f, "wls_150_range", "wls_range", "wls_axis"),
+            R_x         = get_first(f, "r1_final_wls_150_lm15", "r1_final", "Rx"),
+            R_y         = get_first(f, "r2_final_wls_150_lm15", "r2_final", "Ry"),
+            opt_wls     = [],
+        )
+        # optimisation wavelengths 
+        if "wl" in f:
+            run["opt_wls"] = [float(np.array(f["wl"][...]))]
+        elif "wls" in f:
+            run["opt_wls"] = list(np.array(f["wls"][...]).ravel())
+        else:
+            name = os.path.basename(path.as_posix())
+            m = re.search(r"wls-([0-9.]+)-([0-9.]+)", name) 
+            if m:
+                run["opt_wls"] = [float(m.group(1)), float(m.group(2))]
+            else:
+                m = re.search(r"wl-([0-9.]+)", name)
+                if m:
+                    run["opt_wls"] = [float(m.group(1))]
+
+        return run
+
+
+def plot_one_column(
+    fig: plt.Figure,
+    ax3d: Axes3D,
+    axsp: plt.Axes,
+    run: dict,
+    add_3d_legend: bool = False,
+) -> None:
+    """
+    Plot one column: top 3D structure (initial/final), bottom spectrum.
+
+    This is essentially your first script's plot_one_column,
+    just without the debug prints.
+    """
+    # --- TOP: 3D geometry ---
+    ax3d = plot_3ds(
+        run["pos_init"], run["radii_init"],
+        run["pos_final"], run["radii_final"],
+        ax=ax3d
+    )
+    if add_3d_legend:
+        legend_patches = [
+            mpatches.Patch(color='red',  label='Initial'),
+            mpatches.Patch(color='blue', label='Optimized'),
+        ]
+        ax3d.legend(
+            handles=legend_patches,
+            loc='upper left',
+            bbox_to_anchor=(0.1, 1.1)
+        )
+
+
+    # --- BOTTOM: spectra ---
+    axsp.plot(run["wls_axis"], run["R_x"], label=r"$R_x$")
+    axsp.plot(run["wls_axis"], run["R_y"], label=r"$R_y$")
+
+    for wl0 in run["opt_wls"]:
+        axsp.axvline(wl0, color="red", ls="--", lw=1)
+
+    axsp.set_xlabel(r"$\lambda$ (nm)")
+    axsp.set_ylabel("R")
+    ax3d.set_xlabel("x (nm)", labelpad=-1)
+    ax3d.set_ylabel("y (nm)", labelpad=-1)
+    ax3d.set_zlabel("z (nm)", labelpad=-4.)
+
+def plot_spectra(runs):
+    # # --- figure + layout (3×2) ---
+    fig = plt.figure(figsize=(7., 9.))
+    gs = fig.add_gridspec(3, 2)
+
+    ax3d_1 = fig.add_subplot(gs[0, 0], projection="3d")
+    axsp_1 = fig.add_subplot(gs[0, 1])
+    ax3d_2 = fig.add_subplot(gs[1, 0], projection="3d")
+    axsp_2 = fig.add_subplot(gs[1, 1])
+    ax3d_3 = fig.add_subplot(gs[2, 0], projection="3d")
+    axsp_3 = fig.add_subplot(gs[2, 1])
+
+    # # --- plot columns ---
+    plot_one_column(fig, ax3d_1, axsp_1, runs[0], add_3d_legend=True)
+    plot_one_column(fig, ax3d_2, axsp_2, runs[1], add_3d_legend=False)
+    plot_one_column(fig, ax3d_3, axsp_3, runs[2], add_3d_legend=False)
+
+    # legend only on the first spectrum axis
+    axsp_1.legend()
+
+    panel_axes = [ax3d_1, axsp_1, ax3d_2, axsp_2, ax3d_3, axsp_3]
+    panel_labels = ["(a)", "(b)", "(c)", "(d)", "(e)", "(f)"]
+
+    for a, lab in zip(panel_axes, panel_labels):
+        if getattr(a, "name", "") == "3d":  # 3D axes
+            a.text2D(
+                0.05, 1.15, lab, transform=a.transAxes,
+                ha="left", va="top", fontsize=12, fontweight="bold"
+            )
+        else:
+            a.text(
+                0.05, 1.15, lab, transform=a.transAxes,
+                ha="left", va="top", fontsize=12, fontweight="bold"
+            )
+
+    plt.subplots_adjust(wspace=0.1, hspace=0.4, left=0.1)
+    plt.show()
+
+def plot_phasor_grid(folder, files_map, out_path="final_plots/"):
+    if isinstance(files_map, dict):
+        filenames = list(files_map.keys())
+    else:
+        filenames = list(files_map)
+
+    fig1, axs1 = plt.subplots(2, 2, figsize=(7, 5.5), sharex='row', sharey='row')
+    fig2, axs2 = plt.subplots(2, 2, figsize=(7, 8.), sharex='row', sharey='row')
+    titles = ["x", "y"]
+    all_x, all_y = [], []
+    all_x2, all_y2 = [], []
+
+    for fname in filenames:
+        if "1r" in fname:
+            double = True
+            fig = fig1
+            axs = axs1
+        else:
+            double = False
+            fig = fig2
+            axs = axs2
+        print(fname)
+        with h5py.File(folder / fname, "r") as f:
+            phasor_x = np.asarray(f["phasor_x"][...])
+            phasor_y = np.asarray(f["phasor_y"][...])
+            if "wls" in f:
+                wls = np.asarray(f["wls"][...]).ravel()
+            else:
+                wls = np.array([float(f["wl"][()])])
+            wls_range = np.asarray(f["wls_150_range"][...]).ravel()
+            phasor_x = phasor_x[wls_range==wls]
+            phasor_y = phasor_y[wls_range==wls]
+            print("phasor", phasor_x.shape, phasor_y.shape)
+            pitch       = f["pitch"][...]
+            eps_medium  = f["eps_emb"][...]
+            if double:
+                eps_object  = f["eps_objs"][...]
+            else:    
+                eps_object  = f["eps_obj"][...]
+            lmax        = f["lmax"][...]
+            # wl          = f["wl"][...]
+            #rmax_coef   = f["rmax_coef"][...]
+            #helicity    = f["helicity"][...]
+            #kx, ky      = f["kx"][...], f["ky"][...]
+            radf = f["radii_final"][...]
+            posf = f["pos_final"][...]
+            radii = f["radii_init"][...]
+            positions = f["pos_init"][...]
+        params = np.concatenate((np.array(posf).flatten(), np.array(radf)))
+        cfg = {
+            "lmax": 15,
+            "lmax_glob": 15,
+            "pitch": pitch,
+            "eps_medium": eps_medium,
+            "eps_object": eps_object,
+            "rmax_coef": 1,
+            "helicity": False,
+            "kx": 0.,
+            "ky": 0.,
+            
+        }
+       
+        ansx = np.array(phasor_x)
+        ansy = np.array(phasor_y)  
+        for row_idx, vec in enumerate((ansx, ansy)):
+            for ind, wl in enumerate(wls):
+                if np.isclose(wl, 950.0):
+                    col = 0
+                elif np.isclose(wl, 1050.0):
+                    col = 1
+                else:
+                    continue
+                if double:
+                    raw = np.asarray(vec)[ind]
+                else:
+                    raw = np.asarray(vec)              
+                ax = axs[row_idx, col]
+                esum = np.sum(raw, axis=-2)
+                f_1 = raw.T
+                refl = np.real(esum.conj() @ esum)
+                if  double:
+                    round_num = 3
+                else:
+                    round_num = 5
+                    
+                ax.set_title(
+                    f"At {wl:.0f} nm: {titles[row_idx]}-illumination\n"
+                    f"Reflectance: {np.round(refl, round_num)}"
+                )
+
+                x_part, y_part = draw_chain(ax, f_1, base_width=0.01)
+                if not double:
+                    if row_idx == 0:
+                        axins = inset_axes(ax, "70%", "70%", loc="upper left", borderpad=0.5)
+                        axins.set_aspect('equal', 'box')
+                        draw_chain(axins, f_1, base_width=0.1)
+                        axins.tick_params(labelsize=8, pad=2)
+                        ax.indicate_inset_zoom(axins, edgecolor="red")
+                        axins.set_xticks([])
+                        axins.set_yticks([])
+                if double:
+                    all_x.append(x_part)
+                    all_y.append(y_part)
+                else:
+                    all_x2.append(x_part)
+                    all_y2.append(y_part)    
+                                    
+    def build_lims(all_x, all_y, axs, fig):    
+        all_x = np.hstack(all_x)
+        all_y = np.hstack(all_y)
+        dx = all_x.max() - all_x.min()
+        dy = all_y.max() - all_y.min()
+        xmin, xmax = all_x.min() - 0.1 * dx, all_x.max() + 0.1 * dx
+        ymin, ymax = all_y.min() - 0.1 * dy, all_y.max() + 0.1 * dy
+        for i in range(2):
+            for j in range(2):
+                axs[i, j].set_xlim(xmin, xmax)
+                axs[i, j].set_ylim(ymin, ymax)
+                #axs[i, j].set_aspect('equal', 'box')
+
+        for ax, lab in zip(axs.ravel(), ['(a)', '(b)', '(c)', '(d)']):
+            ax.annotate(lab, xy=(0.0, 1.10), xycoords='axes fraction',
+                        fontsize=12, fontweight='bold')
+
+        handles, labels = [], []
+        for ax in axs.ravel():
+            h, l = ax.get_legend_handles_labels()
+            handles.extend(h)
+            labels.extend(l)
+        uniq = {}
+        for h, l in zip(handles, labels):
+            if l and l not in uniq:
+                uniq[l] = h
+
+        if uniq:
+            fig.legend(uniq.values(), uniq.keys(),
+                    loc='lower center', ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.95))
+
+    build_lims(all_x, all_y, axs1, fig1)
+    build_lims(all_x2, all_y2, axs2, fig2)
+    Path(out_path).mkdir(parents=True, exist_ok=True)
+    fig1_path = out_path + "fig4abcd.png"
+    fig2_path = out_path + "fig3abcd.png"
+
+    fig1.savefig(fig1_path, dpi=300, bbox_inches="tight")
+    fig2.savefig(fig2_path, dpi=300, bbox_inches="tight")
+    plt.show()
