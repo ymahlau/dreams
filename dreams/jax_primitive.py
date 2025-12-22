@@ -163,7 +163,7 @@ def _lpmv_impl(m, v, z):
     result_shape_dtype = jax.ShapeDtypeStruct(
         shape=np.broadcast_shapes(m.shape, v.shape, z.shape), dtype=z.dtype
     )
-    return jax.pure_callback(_lpmv, result_shape_dtype, m, v, z, )
+    return jax.pure_callback(_lpmv, result_shape_dtype, m, v, z, vmap_method="broadcast_all")
 
 lpmv = jax.custom_jvp(_lpmv_impl)
 
