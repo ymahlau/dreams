@@ -1,12 +1,13 @@
 import numpy as anp
 import jax
-import jax.numpy as np
-from dreams.jax_primitive import spherical_hankel1, spherical_jn, lpmv
 from jax import config
+config.update("jax_enable_x64", True)
+import jax.numpy as np
+from dreams.new_kernels import tl_vsw_helper_jax
+from dreams.jax_primitive import spherical_hankel1, spherical_jn, lpmv
 from jax.lax import lgamma as loggamma
 from dreams.jax_coord import car2sph, vsph2car
 from dreams.jax_misc import refractive_index,  wave_vec_z, minusonepow
-config.update("jax_enable_x64", True)
 import treams.special as sp
 
 SQPI = np.sqrt(np.pi)
@@ -610,6 +611,7 @@ def efield(r, pidx, l, m, pol, positions,  k0, epsilon, modetype, poltype):
     return res.swapaxes(-1, -2)
 
 def tl_vsw_rA(lambda_, mu, l, m, kr, theta, phi):
+    print("noooooooo")
     pref = (
         0.5
         * minusonepow(m)
@@ -640,32 +642,51 @@ def tl_vsw_A(lambda_, mu, l, m, kr, theta, phi):
     pref = (
         0.5
         * minusonepow(m)
-        * anp.sqrt(
+        * np.sqrt(
             (2 * l + 1) * (2 * lambda_ + 1) / (l * (l + 1) * lambda_ * (lambda_ + 1))
         )
         * np.exp(1j * (m - mu) * phi)
     )
     p = l + lambda_
 
-    dif = p - (anp.maximum(abs(lambda_ - l), abs(m - mu)) - 1)
+    dif = p - (np.maximum(np.abs(lambda_ - l), np.abs(m - mu)) - 1)
     res = np.zeros_like(lambda_) * 1j
     upper_value = anp.max((l + lambda_) - (anp.maximum(abs(lambda_ - l), abs(m - mu)) - 1))
-    for _i in range(
-        0, upper_value, 2
-    ):
-        res = res + (
-            (sp._tl_vsw_helper(l, m, lambda_, -mu, p, p))
-            * (l * (l + 1) + lambda_ * (lambda_ + 1) - p * (p + 1))
-            * spherical_hankel1(p, kr)
-            * lpmv(m - mu, p, theta)
-        ) * (dif > 0)
-        jax.block_until_ready(res)
+    
+    ps, difs = [], []
+    for _ in range(0, upper_value, 2):
+        ps.append(p)
+        difs.append(dif)
         p = p - 2
         dif = dif - 2
-    return res * pref
+    
+    def _helper_fn(cur_p, cur_dif):
+        return (tl_vsw_helper_jax(l, m, lambda_, -mu, cur_p, cur_p)
+            * (l * (l + 1) + lambda_ * (lambda_ + 1) - cur_p * (cur_p + 1))
+            * spherical_hankel1(cur_p, kr)
+            * lpmv(m - mu, cur_p, theta)
+        ) * (cur_dif > 0)
+    
+    res = jax.vmap(_helper_fn)(np.asarray(ps), np.asarray(difs))
+    return res.sum(axis=0) * pref
+    
+    # for _i in range(
+    #     0, upper_value, 2
+    # ):
+    #     res = res + (
+    #         (sp._tl_vsw_helper(l, m, lambda_, -mu, p, p))
+    #         * (l * (l + 1) + lambda_ * (lambda_ + 1) - p * (p + 1))
+    #         * spherical_hankel1(p, kr)
+    #         * lpmv(m - mu, p, theta)
+    #     ) * (dif > 0)
+    #     jax.block_until_ready(res)
+    #     p = p - 2
+    #     dif = dif - 2
+    # return res * pref
 
 
 def tl_vsw_rB(lambda_, mu, l, m, kr, theta, phi):
+    print("noooooooo2")
     pref = (
         0.5
         * minusonepow(m)
@@ -703,6 +724,7 @@ def tl_vsw_rB(lambda_, mu, l, m, kr, theta, phi):
 
 
 def tl_vsw_B(lambda_, mu, l, m, kr, theta, phi):
+    print("noooooooo3")
     pref = (
         0.5
         * minusonepow(m)
